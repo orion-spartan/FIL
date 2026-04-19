@@ -1,6 +1,6 @@
 import typer
 
-from fil.cli.commands import do, listen, sessions, status
+from fil.cli.commands import do, listen, sessions, status, watch
 from fil.shared.console import print_banner
 
 
@@ -23,6 +23,7 @@ status.register(app)
 do.register(app)
 sessions.register(app)
 listen.register(app)
+watch.register(app)
 
 
 def run() -> None:
