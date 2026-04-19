@@ -4,6 +4,8 @@ FIL es un asistente local para Linux orientado a reuniones, dictado y automatiza
 
 La idea del proyecto es correr como una herramienta liviana, local-first, que pueda escuchar audio del sistema y del micrófono, transcribir en tiempo casi real y despachar acciones a agentes mediante comandos simples.
 
+En el modelo actual, `FIL` es la plataforma que conoce el dominio de reuniones y `OpenCode` es el orquestador que decide cómo usar tools y agentes sobre ese dominio.
+
 ## Objetivo
 
 Construir una interfaz tipo consola para controlar flujos como:
@@ -57,6 +59,13 @@ Componentes base sugeridos:
 
 FIL puede usar OpenCode como backend de agentes sin depender de automatización de teclado o de una ventana interactiva.
 
+La relación entre ambos componentes queda definida así:
+
+1. `FIL` es dueño de la captura de audio, sesiones, transcripciones, almacenamiento y tools del dominio.
+2. `OpenCode` recibe contexto desde FIL, razona sobre la tarea y orquesta acciones.
+3. `OpenCode` no debe ser dueño directo del sistema de audio ni de la persistencia principal.
+4. `FIL` define qué tools están disponibles para OpenCode y bajo qué restricciones.
+
 Comandos confirmados por `opencode --help` que resultan relevantes para el proyecto:
 
 1. `opencode run [message..]`
@@ -92,6 +101,17 @@ Decisión de arquitectura actual:
 
 1. `v1`: usar `opencode run` desde subprocess para comandos puntuales.
 2. `v2`: evaluar `opencode serve` o `opencode acp` para un runtime persistente.
+
+## Tools y Orquestación
+
+FIL no debe tratar a OpenCode solo como un generador de texto. Debe tratarlo como un orquestador capaz de invocar tools CLI.
+
+Eso implica:
+
+1. FIL expone tools propias del dominio, por ejemplo iniciar escucha, detener escucha, consultar una sesión o resumir una transcripción.
+2. OpenCode orquesta esas tools usando el contexto de la sesión activa.
+3. El acceso a herramientas públicas del sistema debe estar controlado y no quedar abierto por defecto.
+4. Toda ejecución de tools debe poder registrarse para auditoría y depuración.
 
 ## Arquitectura Inicial
 
