@@ -93,10 +93,43 @@ class TalkService:
         with self._lock:
             if self._snapshot.mode != TalkMode.LISTENING:
                 raise RuntimeError("talk mode is not currently listening")
+            visible_transcript = self._snapshot.partial_transcript.strip()
             self._snapshot.mode = TalkMode.FINALIZING
             self._snapshot.status_message = "closing the current utterance"
+            if visible_transcript:
+                self._snapshot.final_transcript = visible_transcript
 
         self._stop_recording()
+        if visible_transcript:
+            copied = False
+            clipboard_error = None
+            try:
+                with self._lock:
+                    self._snapshot.mode = TalkMode.COPYING
+                    self._snapshot.status_message = "copying the live transcript to the clipboard"
+                    self._snapshot.final_transcript = visible_transcript
+                self.clipboard.copy(visible_transcript)
+                copied = True
+            except RuntimeError as exc:
+                clipboard_error = str(exc)
+
+            self._cleanup_session_dir()
+            with self._lock:
+                self._snapshot = TalkSnapshot(
+                    mode=TalkMode.DONE,
+                    status_message="ready for the next command",
+                    partial_transcript="",
+                    final_transcript=visible_transcript,
+                    copied_to_clipboard=copied,
+                    clipboard_error=clipboard_error,
+                )
+
+            return TalkResult(
+                transcript=visible_transcript,
+                copied_to_clipboard=copied,
+                clipboard_error=clipboard_error,
+            )
+
         chunk_files = self._chunk_files(include_open_tail=True)
         if not chunk_files:
             self._cleanup_session_dir()

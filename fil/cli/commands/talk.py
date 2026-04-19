@@ -100,7 +100,9 @@ def render_talk(snapshot: TalkSnapshot, *, exiting: bool = False):
     transcript_body = ""
     if snapshot.mode == TalkMode.LISTENING:
         transcript_body = snapshot.partial_transcript or "listening..."
-    elif snapshot.mode in {TalkMode.FINALIZING, TalkMode.TRANSCRIBING, TalkMode.COPYING}:
+    elif snapshot.mode == TalkMode.COPYING:
+        transcript_body = snapshot.final_transcript or snapshot.partial_transcript or "copying current transcript..."
+    elif snapshot.mode in {TalkMode.FINALIZING, TalkMode.TRANSCRIBING}:
         transcript_body = snapshot.partial_transcript or "processing current utterance..."
     elif snapshot.mode == TalkMode.ERROR:
         transcript_title = "Error"
