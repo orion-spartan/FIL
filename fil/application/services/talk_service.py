@@ -7,7 +7,6 @@ from pathlib import Path
 import shutil
 import tempfile
 import threading
-import time
 
 from fil.application.services.clipboard_service import ClipboardService
 from fil.infrastructure.audio.ffmpeg_segments import FfmpegSegmentRecorder, SegmentedRecordingHandle
@@ -18,8 +17,6 @@ from fil.shared.audio import concatenate_wav_files
 class TalkMode(StrEnum):
     IDLE = "idle"
     LISTENING = "listening"
-    FINALIZING = "finalizing"
-    TRANSCRIBING = "transcribing"
     COPYING = "copying"
     DONE = "done"
     ERROR = "error"
@@ -49,13 +46,11 @@ class TalkService:
         self,
         recorder: FfmpegSegmentRecorder,
         preview_transcriber: FasterWhisperTranscriber,
-        final_transcriber: FasterWhisperTranscriber,
         clipboard: ClipboardService,
         temp_root: Path,
     ) -> None:
         self.recorder = recorder
         self.preview_transcriber = preview_transcriber
-        self.final_transcriber = final_transcriber
         self.clipboard = clipboard
         self.temp_root = temp_root
 
@@ -64,7 +59,7 @@ class TalkService:
         self._recording: SegmentedRecordingHandle | None = None
         self._session_dir: Path | None = None
         self._preview_thread: threading.Thread | None = None
-        self._preview_stop = threading.Event()
+        self._preview_stop: threading.Event | None = None
 
     def snapshot(self) -> TalkSnapshot:
         with self._lock:
@@ -86,7 +81,12 @@ class TalkService:
         self._recording = self.recorder.start(session_dir)
 
         self._preview_stop = threading.Event()
-        self._preview_thread = threading.Thread(target=self._preview_loop, name="fil-talk-preview", daemon=True)
+        self._preview_thread = threading.Thread(
+            target=self._preview_loop,
+            args=(self._preview_stop, session_dir),
+            name="fil-talk-preview",
+            daemon=True,
+        )
         self._preview_thread.start()
 
     def stop(self) -> TalkResult:
@@ -94,136 +94,133 @@ class TalkService:
             if self._snapshot.mode != TalkMode.LISTENING:
                 raise RuntimeError("talk mode is not currently listening")
             visible_transcript = self._snapshot.partial_transcript.strip()
-            self._snapshot.mode = TalkMode.FINALIZING
-            self._snapshot.status_message = "closing the current utterance"
-            if visible_transcript:
-                self._snapshot.final_transcript = visible_transcript
+            self._snapshot.mode = TalkMode.COPYING
+            self._snapshot.status_message = "copying the visible transcript"
+            self._snapshot.final_transcript = visible_transcript
 
-        self._stop_recording()
+            recording = self._recording
+            session_dir = self._session_dir
+            preview_thread = self._preview_thread
+            preview_stop = self._preview_stop
+
+            self._recording = None
+            self._session_dir = None
+            self._preview_thread = None
+            self._preview_stop = None
+
+        if preview_stop is not None:
+            preview_stop.set()
+
+        self._finalize_session_async(
+            recording=recording,
+            preview_thread=preview_thread,
+            session_dir=session_dir,
+        )
+
+        copied = False
+        clipboard_error = None
+
         if visible_transcript:
-            copied = False
-            clipboard_error = None
             try:
-                with self._lock:
-                    self._snapshot.mode = TalkMode.COPYING
-                    self._snapshot.status_message = "copying the live transcript to the clipboard"
-                    self._snapshot.final_transcript = visible_transcript
                 self.clipboard.copy(visible_transcript)
                 copied = True
             except RuntimeError as exc:
                 clipboard_error = str(exc)
 
-            self._cleanup_session_dir()
-            with self._lock:
-                self._snapshot = TalkSnapshot(
-                    mode=TalkMode.DONE,
-                    status_message="ready for the next command",
-                    partial_transcript="",
-                    final_transcript=visible_transcript,
-                    copied_to_clipboard=copied,
-                    clipboard_error=clipboard_error,
-                )
-
-            return TalkResult(
-                transcript=visible_transcript,
-                copied_to_clipboard=copied,
-                clipboard_error=clipboard_error,
-            )
-
-        chunk_files = self._chunk_files(include_open_tail=True)
-        if not chunk_files:
-            self._cleanup_session_dir()
-            result = TalkResult(transcript="", copied_to_clipboard=False)
-            with self._lock:
-                self._snapshot = TalkSnapshot(
-                    mode=TalkMode.DONE,
-                    status_message="no speech detected; nothing was saved",
-                    final_transcript="",
-                )
-            return result
-
-        final_audio = self._session_dir / "final.wav"
-        try:
-            with self._lock:
-                self._snapshot.status_message = "building a final audio pass"
-            concatenate_wav_files(chunk_files, final_audio)
-            with self._lock:
-                self._snapshot.mode = TalkMode.TRANSCRIBING
-                self._snapshot.status_message = "transcribing the final utterance"
-            transcript = self.final_transcriber.transcribe(final_audio)
-        except Exception as exc:
-            self._cleanup_session_dir()
-            with self._lock:
-                self._snapshot.mode = TalkMode.ERROR
-                self._snapshot.status_message = "transcription failed"
-                self._snapshot.error_message = f"transcription failed: {exc}"
-            raise RuntimeError("talk transcription failed") from exc
-
-        copied = False
-        clipboard_error = None
-        try:
-            with self._lock:
-                self._snapshot.mode = TalkMode.COPYING
-                self._snapshot.status_message = "copying the transcript to the clipboard"
-                self._snapshot.final_transcript = transcript
-            self.clipboard.copy(transcript)
-            copied = bool(transcript)
-        except RuntimeError as exc:
-            clipboard_error = str(exc)
-
-        self._cleanup_session_dir()
         with self._lock:
             self._snapshot = TalkSnapshot(
                 mode=TalkMode.DONE,
-                status_message="ready for the next command",
+                status_message=(
+                    "ready for the next command"
+                    if visible_transcript
+                    else "no visible transcript to copy; nothing was saved"
+                ),
                 partial_transcript="",
-                final_transcript=transcript,
+                final_transcript=visible_transcript,
                 copied_to_clipboard=copied,
                 clipboard_error=clipboard_error,
             )
 
-        return TalkResult(transcript=transcript, copied_to_clipboard=copied, clipboard_error=clipboard_error)
+        return TalkResult(
+            transcript=visible_transcript,
+            copied_to_clipboard=copied,
+            clipboard_error=clipboard_error,
+        )
 
     def cancel(self) -> None:
-        self._stop_recording()
-        self._cleanup_session_dir()
+        with self._lock:
+            recording = self._recording
+            session_dir = self._session_dir
+            preview_thread = self._preview_thread
+            preview_stop = self._preview_stop
+
+            self._recording = None
+            self._session_dir = None
+            self._preview_thread = None
+            self._preview_stop = None
+
+        if preview_stop is not None:
+            preview_stop.set()
+        self._finalize_session_async(
+            recording=recording,
+            preview_thread=preview_thread,
+            session_dir=session_dir,
+        )
+
         with self._lock:
             self._snapshot = TalkSnapshot(
                 mode=TalkMode.IDLE,
                 status_message="cancelled; nothing was saved",
             )
 
-    def _stop_recording(self) -> None:
-        self._preview_stop.set()
-        if self._preview_thread is not None:
-            self._preview_thread.join(timeout=2)
-            self._preview_thread = None
+    def _finalize_session_async(
+        self,
+        *,
+        recording: SegmentedRecordingHandle | None,
+        preview_thread: threading.Thread | None,
+        session_dir: Path | None,
+    ) -> None:
+        thread = threading.Thread(
+            target=self._finalize_session,
+            kwargs={
+                "recording": recording,
+                "preview_thread": preview_thread,
+                "session_dir": session_dir,
+            },
+            name="fil-talk-finalize",
+            daemon=True,
+        )
+        thread.start()
 
-        recording = self._recording
-        self._recording = None
-        if recording is None:
-            return
-
-        try:
-            self.recorder.stop(recording.pid)
-        except Exception:
-            self.recorder.force_stop(recording.pid)
-
-    def _cleanup_session_dir(self) -> None:
-        if self._session_dir is not None:
-            shutil.rmtree(self._session_dir, ignore_errors=True)
-            self._session_dir = None
-
-    def _preview_loop(self) -> None:
-        last_signature: tuple[str, ...] = ()
-        while not self._preview_stop.wait(0.2):
+    def _finalize_session(
+        self,
+        *,
+        recording: SegmentedRecordingHandle | None,
+        preview_thread: threading.Thread | None,
+        session_dir: Path | None,
+    ) -> None:
+        if recording is not None:
             try:
-                chunk_files = self._chunk_files(include_open_tail=False)
+                self.recorder.stop(recording.pid)
+            except Exception:
+                self.recorder.force_stop(recording.pid)
+
+        if preview_thread is not None:
+            preview_thread.join(timeout=2)
+
+        if session_dir is not None:
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+    def _preview_loop(self, stop_event: threading.Event, session_dir: Path) -> None:
+        last_signature: tuple[str, ...] = ()
+        while not stop_event.wait(0.2):
+            try:
+                chunk_files = self._chunk_files(session_dir, include_open_tail=False)
                 signature = tuple(path.name for path in chunk_files)
                 if not chunk_files or signature == last_signature:
                     continue
 
-                preview_audio = self._session_dir / "preview.wav"
+                preview_audio = session_dir / "preview.wav"
                 concatenate_wav_files(chunk_files, preview_audio)
                 transcript = self.preview_transcriber.transcribe(preview_audio)
                 last_signature = signature
@@ -233,11 +230,8 @@ class TalkService:
             except Exception:
                 continue
 
-    def _chunk_files(self, *, include_open_tail: bool) -> list[Path]:
-        session_dir = self._session_dir
-        if session_dir is None:
-            return []
-
+    @staticmethod
+    def _chunk_files(session_dir: Path, *, include_open_tail: bool) -> list[Path]:
         chunk_files = sorted(session_dir.glob("chunk-*.wav"))
         if not include_open_tail and len(chunk_files) > 1:
             return chunk_files[:-1]

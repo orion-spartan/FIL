@@ -55,8 +55,6 @@ def _mode_label(mode: TalkMode) -> str:
     labels = {
         TalkMode.IDLE: "idle",
         TalkMode.LISTENING: "listening",
-        TalkMode.FINALIZING: "finalizing audio",
-        TalkMode.TRANSCRIBING: "transcribing",
         TalkMode.COPYING: "copying to clipboard",
         TalkMode.DONE: "done",
         TalkMode.ERROR: "error",
@@ -79,8 +77,8 @@ def _controls_label(snapshot: TalkSnapshot, exiting: bool) -> str:
         return "finishing current utterance, then quitting"
     if snapshot.mode == TalkMode.LISTENING:
         return "Space stop, q cancel and quit"
-    if snapshot.mode in {TalkMode.FINALIZING, TalkMode.TRANSCRIBING, TalkMode.COPYING}:
-        return "processing current utterance... q will quit when done"
+    if snapshot.mode == TalkMode.COPYING:
+        return "copying visible transcript... q will quit when done"
     return "Space start/stop, q quit"
 
 
@@ -93,7 +91,7 @@ def render_talk(snapshot: TalkSnapshot, *, exiting: bool = False):
     status.add_row("Persistence", "ephemeral (not saved)")
     status.add_row("Clipboard", _clipboard_label(snapshot))
     status.add_row("Status", snapshot.status_message)
-    if snapshot.mode in {TalkMode.LISTENING, TalkMode.FINALIZING, TalkMode.TRANSCRIBING, TalkMode.COPYING}:
+    if snapshot.mode in {TalkMode.LISTENING, TalkMode.COPYING}:
         status.add_row("Elapsed", _elapsed(snapshot.started_at))
 
     transcript_title = "Live Transcript"
@@ -102,8 +100,6 @@ def render_talk(snapshot: TalkSnapshot, *, exiting: bool = False):
         transcript_body = snapshot.partial_transcript or "listening..."
     elif snapshot.mode == TalkMode.COPYING:
         transcript_body = snapshot.final_transcript or snapshot.partial_transcript or "copying current transcript..."
-    elif snapshot.mode in {TalkMode.FINALIZING, TalkMode.TRANSCRIBING}:
-        transcript_body = snapshot.partial_transcript or "processing current utterance..."
     elif snapshot.mode == TalkMode.ERROR:
         transcript_title = "Error"
         transcript_body = snapshot.error_message or "unknown error"
@@ -160,7 +156,7 @@ def run_talk() -> None:
                     if snapshot.mode == TalkMode.LISTENING:
                         service.cancel()
                         break
-                    if snapshot.mode in {TalkMode.FINALIZING, TalkMode.TRANSCRIBING, TalkMode.COPYING}:
+                    if snapshot.mode == TalkMode.COPYING:
                         exit_after_processing = True
                         continue
                     break

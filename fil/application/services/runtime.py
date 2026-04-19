@@ -31,7 +31,6 @@ def talk_service() -> TalkService:
     return TalkService(
         recorder=FfmpegSegmentRecorder(segment_time=0.35),
         preview_transcriber=FasterWhisperTranscriber(model_name="tiny", beam_size=1, vad_filter=False),
-        final_transcriber=FasterWhisperTranscriber(model_name="base", beam_size=3),
         clipboard=ClipboardService(),
         temp_root=temp_root(),
     )

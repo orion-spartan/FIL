@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 
 
 class ClipboardService:
+    def _reap_process(self, process: subprocess.Popen[str]) -> None:
+        try:
+            process.wait()
+        except Exception:
+            pass
+
     def copy(self, text: str) -> None:
         if not text:
             return
@@ -15,7 +22,23 @@ class ClipboardService:
 
         for command in commands:
             try:
-                subprocess.run(command, input=text, text=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    start_new_session=True,
+                )
+
+                try:
+                    process.communicate(input=text, timeout=0.05)
+                except subprocess.TimeoutExpired:
+                    # Clipboard tools often stay alive to own the selection.
+                    threading.Thread(target=self._reap_process, args=(process,), daemon=True).start()
+                else:
+                    if process.returncode not in (0, None):
+                        raise RuntimeError(f"clipboard command failed: {' '.join(command)}")
                 return
             except FileNotFoundError:
                 continue
