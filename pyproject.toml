@@ -21,10 +21,12 @@ packages = [
   "fil.cli",
   "fil.cli.commands",
   "fil.application",
+  "fil.application.services",
   "fil.application.use_cases",
   "fil.domain",
   "fil.domain.models",
   "fil.infrastructure",
+  "fil.infrastructure.audio",
   "fil.infrastructure.storage",
   "fil.shared",
 ]

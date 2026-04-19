@@ -1,6 +1,6 @@
 import typer
 
-from fil.cli.commands import do, sessions, status
+from fil.cli.commands import do, listen, sessions, status
 from fil.shared.console import print_banner
 
 
@@ -22,6 +22,7 @@ def main(ctx: typer.Context) -> None:
 status.register(app)
 do.register(app)
 sessions.register(app)
+listen.register(app)
 
 
 def run() -> None:
