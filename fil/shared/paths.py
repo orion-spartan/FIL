@@ -20,5 +20,11 @@ def audio_root() -> Path:
     return root
 
 
+def temp_root() -> Path:
+    root = data_root() / "tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def db_path() -> Path:
     return data_root() / "fil.db"

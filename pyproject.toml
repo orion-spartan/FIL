@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "typer>=0.12,<1.0",
   "rich>=13.7,<14.0",
+  "faster-whisper>=1.1,<2.0",
 ]
 
 [project.scripts]
@@ -27,6 +28,7 @@ packages = [
   "fil.domain.models",
   "fil.infrastructure",
   "fil.infrastructure.audio",
+  "fil.infrastructure.transcription",
   "fil.infrastructure.storage",
   "fil.shared",
 ]

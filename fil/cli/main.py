@@ -1,6 +1,6 @@
 import typer
 
-from fil.cli.commands import do, listen, sessions, status, watch
+from fil.cli.commands import dictate, do, listen, sessions, status, talk, watch
 from fil.shared.console import print_banner
 
 
@@ -14,13 +14,15 @@ app = typer.Typer(
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
+    if ctx.invoked_subcommand is None and not ctx.resilient_parsing:
         print_banner()
         typer.echo(ctx.get_help())
 
 
 status.register(app)
 do.register(app)
+dictate.register(app)
+talk.register(app)
 sessions.register(app)
 listen.register(app)
 watch.register(app)
