@@ -27,7 +27,7 @@ def run_dictation() -> None:
 
 
 def register(app: typer.Typer) -> None:
-    @app.command("d")
+    @app.command("d", hidden=True)
     def dictate_short() -> None:
         """Short alias for quick dictation."""
         run_dictation()

@@ -62,6 +62,7 @@ Comandos previstos:
 ```bash
 fil listen start
 fil listen stop
+fil listen live
 fil dictate
 fil do "resume la última reunión"
 fil status
@@ -171,6 +172,22 @@ Resultado esperado:
 
 1. muestra el `session-id`
 2. confirma estado final
+
+## `fil listen live`
+
+Responsabilidad:
+
+1. iniciar una sesión de reunión en vivo
+2. capturar audio del micrófono y/o del sistema
+3. transcribir en tiempo casi real por bloques cortos
+4. generar insights periódicos con OpenCode
+5. mostrar transcript e insights en consola
+
+Resultado esperado:
+
+1. transcript incremental visible
+2. resumenes/observaciones periódicas visibles
+3. sesión persistida con metadatos e historia
 
 ## `fil dictate`
 

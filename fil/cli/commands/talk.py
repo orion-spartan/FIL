@@ -167,7 +167,7 @@ def run_talk() -> None:
 
 
 def register(app: typer.Typer) -> None:
-    @app.command("t")
+    @app.command("t", hidden=True)
     def talk_short() -> None:
         """Interactive low-latency talk mode for short commands."""
         run_talk()

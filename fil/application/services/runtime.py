@@ -3,7 +3,11 @@ from __future__ import annotations
 from fil.application.services.clipboard_service import ClipboardService
 from fil.application.services.dictate_service import DictateService
 from fil.application.services.listen_service import ListenService
+from fil.application.services.meeting_service import MeetingConfig, MeetingService
 from fil.application.services.talk_service import TalkService
+from fil.domain.models.audio import AudioInputMode
+from fil.infrastructure.agents.opencode_runner import OpenCodeRunner
+from fil.infrastructure.audio.meeting_recorder import FfmpegMeetingRecorder
 from fil.infrastructure.audio.ffmpeg_segments import FfmpegSegmentRecorder
 from fil.infrastructure.audio.pw_record import PwRecordRecorder
 from fil.infrastructure.storage.session_store import SessionStore
@@ -32,6 +36,16 @@ def talk_service() -> TalkService:
         recorder=FfmpegSegmentRecorder(segment_time=0.35),
         preview_transcriber=FasterWhisperTranscriber(model_name="tiny", beam_size=1, vad_filter=False),
         clipboard=ClipboardService(),
+        temp_root=temp_root(),
+    )
+
+
+def meeting_service() -> MeetingService:
+    return MeetingService(
+        session_store=session_store(),
+        recorder=FfmpegMeetingRecorder(segment_time=3.0),
+        transcriber=FasterWhisperTranscriber(model_name="base", beam_size=3),
+        open_code=OpenCodeRunner(),
         temp_root=temp_root(),
     )
 

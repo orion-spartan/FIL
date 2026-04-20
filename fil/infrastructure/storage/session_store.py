@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -36,10 +37,18 @@ class SessionStore:
                     audio_path TEXT,
                     transcript_path TEXT,
                     recorder_pid INTEGER,
-                    error_message TEXT
+                    error_message TEXT,
+                    metadata_json TEXT
                 )
                 """
             )
+            self._ensure_column(connection, "metadata_json", "TEXT")
+
+    def _ensure_column(self, connection: sqlite3.Connection, name: str, sql_type: str) -> None:
+        rows = connection.execute("PRAGMA table_info(sessions)").fetchall()
+        if any(row["name"] == name for row in rows):
+            return
+        connection.execute(f"ALTER TABLE sessions ADD COLUMN {name} {sql_type}")
 
     def create_session(self, session: Session) -> None:
         with self._connect() as connection:
@@ -47,8 +56,8 @@ class SessionStore:
                 """
                 INSERT INTO sessions (
                     id, type, status, created_at, updated_at, title,
-                    audio_path, transcript_path, recorder_pid, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    audio_path, transcript_path, recorder_pid, error_message, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.id,
@@ -61,6 +70,7 @@ class SessionStore:
                     session.transcript_path,
                     session.recorder_pid,
                     session.error_message,
+                    json.dumps(session.metadata, ensure_ascii=False),
                 ),
             )
 
@@ -71,7 +81,7 @@ class SessionStore:
                 """
                 UPDATE sessions
                 SET type = ?, status = ?, updated_at = ?, title = ?,
-                    audio_path = ?, transcript_path = ?, recorder_pid = ?, error_message = ?
+                    audio_path = ?, transcript_path = ?, recorder_pid = ?, error_message = ?, metadata_json = ?
                 WHERE id = ?
                 """,
                 (
@@ -83,6 +93,7 @@ class SessionStore:
                     session.transcript_path,
                     session.recorder_pid,
                     session.error_message,
+                    json.dumps(session.metadata, ensure_ascii=False),
                     session.id,
                 ),
             )
@@ -133,4 +144,5 @@ class SessionStore:
             transcript_path=row["transcript_path"],
             recorder_pid=row["recorder_pid"],
             error_message=row["error_message"],
+            metadata=json.loads(row["metadata_json"] or "{}"),
         )

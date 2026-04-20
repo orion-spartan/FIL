@@ -28,6 +28,7 @@ packages = [
   "fil.domain.models",
   "fil.infrastructure",
   "fil.infrastructure.audio",
+  "fil.infrastructure.agents",
   "fil.infrastructure.transcription",
   "fil.infrastructure.storage",
   "fil.shared",
