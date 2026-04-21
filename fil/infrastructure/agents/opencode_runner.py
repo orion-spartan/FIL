@@ -5,10 +5,23 @@ import subprocess
 
 class OpenCodeRunner:
     def run(self, prompt: str, *, system_prompt: str | None = None, timeout: int = 120) -> str:
-        command = ["opencode", "run"]
+        final_prompt = prompt
         if system_prompt:
-            command.extend(["--prompt", system_prompt])
-        command.append(prompt)
+            final_prompt = f"{system_prompt}\n\n{prompt}"
 
-        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
-        return result.stdout.strip()
+        command = ["opencode", "run", final_prompt]
+
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"opencode timed out after {timeout}s") from exc
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            detail = stderr or stdout or "unknown opencode failure"
+            raise RuntimeError(f"opencode failed: {detail}") from exc
+
+        output = result.stdout.strip()
+        if not output:
+            raise RuntimeError("opencode returned an empty response")
+        return output

@@ -207,6 +207,17 @@ Responsabilidades:
 2. encapsular dependencias externas
 3. permitir reemplazo futuro de implementaciones
 
+### Feedback En Vivo
+
+Las capacidades de feedback en vivo, como medidores de audio, no deben depender del pipeline de transcripción.
+
+Reglas:
+
+1. el transcript y el metering deben poder correr de forma independiente
+2. el metering debe exponer estado por fuente cuando existan múltiples entradas, por ejemplo `mic` y `system`
+3. la UI de consola solo debe renderizar ese estado; no calcularlo
+4. estos runtimes deben ser reutilizables por `talk`, `dictate`, `listen` y futuros comandos de diagnóstico
+
 ## Modelo de responsabilidades
 
 La relación entre `FIL` y `OpenCode` queda definida así:

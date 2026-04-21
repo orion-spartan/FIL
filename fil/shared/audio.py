@@ -50,3 +50,17 @@ def wav_rms_level(input_file: Path) -> float:
         squared_sum = sum(sample * sample for sample in samples)
         rms = sqrt(squared_sum / len(samples))
         return min(rms / 32768.0, 1.0)
+
+
+def pcm16le_rms_level(buffer: bytes) -> float:
+    if not buffer:
+        return 0.0
+
+    samples = array("h")
+    samples.frombytes(buffer)
+    if not samples:
+        return 0.0
+
+    squared_sum = sum(sample * sample for sample in samples)
+    rms = sqrt(squared_sum / len(samples))
+    return min(rms / 32768.0, 1.0)

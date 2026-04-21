@@ -43,9 +43,10 @@ def register(app: typer.Typer) -> None:
     @listen_app.command("live")
     def live(
         input_mode: str = typer.Option(AudioInputMode.MIXED.value, help="Audio input mode: mic, system or mixed."),
-        chunk_seconds: float = typer.Option(3.0, min=1.0, max=10.0, help="Chunk size in seconds for live transcript."),
+        chunk_seconds: float = typer.Option(30.0, min=1.0, max=60.0, help="Chunk size in seconds for live transcript."),
         summary_every_seconds: float = typer.Option(45.0, min=15.0, max=300.0, help="How often to ask OpenCode for insights."),
-        transcription_model: str = typer.Option("base", help="Whisper model name."),
+        transcription_model: str = typer.Option("tiny", help="Whisper model name."),
+        transcription_language: str = typer.Option("es", help="Language hint for Whisper, or auto."),
         persist_transcript: bool = typer.Option(True, help="Persist the transcript to disk."),
         persist_insights: bool = typer.Option(True, help="Persist periodic insights to disk."),
     ) -> None:
@@ -64,6 +65,7 @@ def register(app: typer.Typer) -> None:
                     transcript_chunk_seconds=chunk_seconds,
                     summary_every_seconds=summary_every_seconds,
                     transcription_model=transcription_model,
+                    transcription_language=None if transcription_language == "auto" else transcription_language,
                     persist_transcript=persist_transcript,
                     persist_insights=persist_insights,
                 )
@@ -77,33 +79,57 @@ def register(app: typer.Typer) -> None:
         console.print(f"Transcript chunks: [cyan]{chunk_seconds}s[/cyan]")
         console.print(f"Insights every: [cyan]{summary_every_seconds}s[/cyan]")
         console.print(f"Model: [cyan]{transcription_model}[/cyan]")
+        console.print(f"Language: [cyan]{transcription_language}[/cyan]")
         console.print(f"Persist transcript: [cyan]{persist_transcript}[/cyan]")
         console.print(f"Persist insights: [cyan]{persist_insights}[/cyan]")
         console.print("Press [bold]Ctrl+C[/bold] to stop.")
 
         try:
             from rich.live import Live
+            from rich.layout import Layout
             from rich.panel import Panel
 
-            with Live(Panel("starting...", title=f"FIL Listen Live ({session.id})", border_style="cyan"), console=console, refresh_per_second=4) as live:
+            def render_screen(snapshot):
+                layout = Layout()
+                layout.split_column(
+                    Layout(name="header", size=12),
+                    Layout(name="body"),
+                )
+                layout["body"].split_row(
+                    Layout(name="transcript", ratio=3),
+                    Layout(name="insights", ratio=2),
+                )
+
+                header_lines = [
+                    f"Mode: {snapshot.mode}",
+                    f"Status: {snapshot.status_message}",
+                ]
+                if selected_mode in {AudioInputMode.MIC, AudioInputMode.MIXED}:
+                    header_lines.append(f"Mic: {render_ascii_meter(snapshot.mic_meter)}")
+                    header_lines.append(f"Mic voice: {'detected' if snapshot.mic_meter.voice_detected else 'silence'}")
+                if selected_mode in {AudioInputMode.SYSTEM, AudioInputMode.MIXED}:
+                    header_lines.append(f"System: {render_ascii_meter(snapshot.system_meter)}")
+                    header_lines.append(f"System audio: {'active' if snapshot.system_meter.voice_detected else 'idle'}")
+                if snapshot.next_summary_in is not None:
+                    header_lines.append(f"Next insight in: {snapshot.next_summary_in:.0f}s")
+                header_lines.append(f"Summary status: {snapshot.summary_status}")
+                if snapshot.last_summary_at:
+                    header_lines.append(f"Last summary at: {snapshot.last_summary_at}")
+                if snapshot.summary_error:
+                    header_lines.append(f"Summary error: {snapshot.summary_error}")
+
+                transcript_text = snapshot.live_transcript[-3000:] if snapshot.live_transcript else "waiting for transcript..."
+                insight_text = snapshot.latest_insight[-2000:] if snapshot.latest_insight else "waiting for insights..."
+
+                layout["header"].update(Panel("\n".join(header_lines), title=f"FIL Listen Live ({session.id})", border_style="cyan"))
+                layout["transcript"].update(Panel(transcript_text, title="Transcript", border_style="green"))
+                layout["insights"].update(Panel(insight_text, title="Session Insight", border_style="magenta"))
+                return layout
+
+            with Live(render_screen(service.snapshot()), console=console, refresh_per_second=4) as live:
                 while True:
                     snapshot = service.snapshot()
-                    meter = render_ascii_meter(snapshot.meter)
-                    lines = [
-                        f"Mode: {snapshot.mode}",
-                        f"Status: {snapshot.status_message}",
-                        f"Mic: {meter}",
-                        f"Voice: {'detected' if snapshot.meter.voice_detected else 'silence'}",
-                    ]
-                    if snapshot.next_summary_in is not None:
-                        lines.append(f"Next insight in: {snapshot.next_summary_in:.0f}s")
-                    if snapshot.live_transcript:
-                        lines.append("Transcript:")
-                        lines.append(snapshot.live_transcript[-1500:])
-                    if snapshot.latest_insight:
-                        lines.append("Latest insight:")
-                        lines.append(snapshot.latest_insight[-1000:])
-                    live.update(Panel("\n".join(lines) or "waiting...", title=f"FIL Listen Live ({session.id})", border_style="cyan"))
+                    live.update(render_screen(snapshot))
                     time.sleep(0.5)
         except KeyboardInterrupt:
             stopped = service.stop()

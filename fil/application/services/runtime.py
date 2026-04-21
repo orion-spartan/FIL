@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from fil.application.services.audio_meter_runtime import AudioMeterRuntime
 from fil.application.services.clipboard_service import ClipboardService
 from fil.application.services.dictate_service import DictateService
 from fil.application.services.listen_service import ListenService
-from fil.application.services.meeting_service import MeetingConfig, MeetingService
+from fil.application.services.meeting_service import MeetingService
 from fil.application.services.talk_service import TalkService
-from fil.domain.models.audio import AudioInputMode
 from fil.infrastructure.agents.opencode_runner import OpenCodeRunner
 from fil.infrastructure.audio.meeting_recorder import FfmpegMeetingRecorder
 from fil.infrastructure.audio.ffmpeg_segments import FfmpegSegmentRecorder
+from fil.infrastructure.audio.live_meter import FfmpegLiveMeterSource
+from fil.infrastructure.audio.pulse_sources import PulseSourceResolver
 from fil.infrastructure.audio.pw_record import PwRecordRecorder
 from fil.infrastructure.storage.session_store import SessionStore
 from fil.infrastructure.transcription.faster_whisper import FasterWhisperTranscriber
@@ -43,9 +45,20 @@ def talk_service() -> TalkService:
 def meeting_service() -> MeetingService:
     return MeetingService(
         session_store=session_store(),
-        recorder=FfmpegMeetingRecorder(segment_time=3.0),
-        transcriber=FasterWhisperTranscriber(model_name="base", beam_size=3),
+        recorder=FfmpegMeetingRecorder(segment_time=30.0),
+        transcriber=FasterWhisperTranscriber(
+            model_name="tiny",
+            beam_size=1,
+            vad_filter=False,
+            language="es",
+            compute_type="int8",
+        ),
         open_code=OpenCodeRunner(),
+        meter_runtime=AudioMeterRuntime(
+            source_factory=FfmpegLiveMeterSource(sample_rate=16000),
+            source_resolver=PulseSourceResolver(),
+            frame_window_seconds=0.05,
+        ),
         temp_root=temp_root(),
     )
 
