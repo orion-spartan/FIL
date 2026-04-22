@@ -93,12 +93,12 @@ def register(app: typer.Typer) -> None:
             def build_layout() -> Layout:
                 layout = Layout()
                 layout.split_column(
-                    Layout(name="header", size=12),
+                    Layout(name="header", size=10),
                     Layout(name="body"),
                 )
-                layout["body"].split_row(
-                    Layout(name="transcript", ratio=3),
-                    Layout(name="insights", ratio=2),
+                layout["body"].split_column(
+                    Layout(name="insights"),
+                    Layout(name="transcript", size=6),
                 )
                 return layout
 
@@ -121,7 +121,8 @@ def register(app: typer.Typer) -> None:
                 if snapshot.summary_error:
                     header_lines.append(f"Summary error: {snapshot.summary_error}")
 
-                transcript_text = snapshot.live_transcript[-3000:] if snapshot.live_transcript else "waiting for transcript..."
+                transcript_lines = [line.strip() for line in snapshot.live_transcript.splitlines() if line.strip()]
+                transcript_text = "\n".join(transcript_lines[-3:]) if transcript_lines else "waiting for transcript..."
                 insight_renderable = Markdown(snapshot.latest_insight) if snapshot.latest_insight else "waiting for insights..."
 
                 layout["header"].update(Panel("\n".join(header_lines), title=f"FIL Listen Live ({session.id})", border_style="cyan"))
