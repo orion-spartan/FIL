@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -54,6 +53,7 @@ class MeetingService:
         transcriber: FasterWhisperTranscriber,
         open_code: OpenCodeRunner,
         meter_runtime: AudioMeterRuntime,
+        output_root: Path,
         temp_root: Path,
     ) -> None:
         self.session_store = session_store
@@ -61,6 +61,7 @@ class MeetingService:
         self.transcriber = transcriber
         self.open_code = open_code
         self.meter_runtime = meter_runtime
+        self.output_root = output_root
         self.temp_root = temp_root
 
         self._lock = threading.Lock()
@@ -72,7 +73,7 @@ class MeetingService:
         self._transcriber_thread: threading.Thread | None = None
         self._summary_thread: threading.Thread | None = None
         self._transcript_file: Path | None = None
-        self._summary_file: Path | None = None
+        self._insights_file: Path | None = None
         self._transcript_parts: list[str] = []
         self._processed_chunk_names: set[str] = set()
 
@@ -108,6 +109,8 @@ class MeetingService:
         now = datetime.utcnow()
         session_dir = self.temp_root / f"meeting-{session_id}"
         session_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = self.output_root / session_id
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         with self._lock:
             self._snapshot.status_message = "loading live transcription model"
@@ -116,8 +119,8 @@ class MeetingService:
         self.transcriber.configure(language=config.transcription_language)
         self.transcriber.ensure_loaded()
 
-        transcript_file = session_dir / "transcript.txt" if config.persist_transcript else None
-        summary_file = session_dir / "insights.jsonl"
+        transcript_file = output_dir / "transcript.md" if config.persist_transcript else None
+        insights_file = output_dir / "insights.md" if config.persist_insights else None
 
         session = Session(
             id=session_id,
@@ -135,9 +138,15 @@ class MeetingService:
                 "transcription_language": config.transcription_language,
                 "persist_transcript": config.persist_transcript,
                 "persist_insights": config.persist_insights,
+                "output_dir": str(output_dir),
+                "insights_path": str(insights_file) if insights_file is not None else None,
             },
         )
         self.session_store.create_session(session)
+        if transcript_file is not None:
+            self._write_transcript_markdown(session, transcript_file, "")
+        if insights_file is not None:
+            self._write_insights_header(session, insights_file)
 
         recording_dir = session_dir / "audio"
         recording: MeetingRecordingHandle | None = None
@@ -161,7 +170,7 @@ class MeetingService:
         self._session_dir = session_dir
         self._session = session
         self._transcript_file = transcript_file
-        self._summary_file = summary_file
+        self._insights_file = insights_file
         self._transcript_parts = []
         self._processed_chunk_names = set()
 
@@ -199,11 +208,6 @@ class MeetingService:
             session_dir = self._session_dir
 
             self._stop_event.set()
-            self._recording = None
-            self._transcriber_thread = None
-            self._summary_thread = None
-            self._session_dir = None
-            self._session = None
 
         if recording is not None:
             try:
@@ -229,6 +233,13 @@ class MeetingService:
             self.session_store.update_session(session)
 
         with self._lock:
+            self._recording = None
+            self._transcriber_thread = None
+            self._summary_thread = None
+            self._session_dir = None
+            self._session = None
+            self._transcript_file = None
+            self._insights_file = None
             self._snapshot = MeetingSnapshot(mode="stopped", status_message="meeting capture stopped")
 
         return session
@@ -272,11 +283,59 @@ class MeetingService:
         self._transcript_parts.append(text)
 
         live_transcript = "\n".join(self._transcript_parts).strip()
-        if self._transcript_file is not None:
-            self._transcript_file.write_text(live_transcript, encoding="utf-8")
+        if self._session is not None and self._transcript_file is not None:
+            self._write_transcript_markdown(self._session, self._transcript_file, live_transcript)
 
         with self._lock:
             self._snapshot.live_transcript = live_transcript
+
+    def _write_transcript_markdown(self, session: Session, transcript_file: Path, transcript: str) -> None:
+        lines = [
+            "# Session Transcript",
+            "",
+            f"- Session: `{session.id}`",
+            f"- Type: `{session.type.value}`",
+            f"- Created: `{session.created_at.isoformat(timespec='seconds')}`",
+        ]
+        if input_mode := session.metadata.get("input_mode"):
+            lines.append(f"- Input mode: `{input_mode}`")
+        lines.extend(["", "## Transcript", ""])
+        if transcript.strip():
+            lines.extend(["```text", transcript.strip(), "```", ""])
+        else:
+            lines.extend(["_Waiting for transcript..._", ""])
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+
+    def _write_insights_header(self, session: Session, insights_file: Path) -> None:
+        lines = [
+            "# Session Insights",
+            "",
+            f"- Session: `{session.id}`",
+            f"- Type: `{session.type.value}`",
+            f"- Created: `{session.created_at.isoformat(timespec='seconds')}`",
+        ]
+        if input_mode := session.metadata.get("input_mode"):
+            lines.append(f"- Input mode: `{input_mode}`")
+        lines.extend([
+            "",
+            "_Waiting for insights..._",
+            "",
+        ])
+        insights_file.write_text("\n".join(lines), encoding="utf-8")
+
+    def _append_insight_markdown(self, insights_file: Path, insight: str, created_at: datetime) -> None:
+        existing = insights_file.read_text(encoding="utf-8") if insights_file.exists() else ""
+        if "_Waiting for insights..._" in existing:
+            existing = existing.replace("_Waiting for insights..._\n", "")
+
+        section = [
+            "",
+            f"## {created_at.isoformat(timespec='seconds')}",
+            "",
+            insight.strip() or "_No insight generated._",
+            "",
+        ]
+        insights_file.write_text(existing.rstrip() + "\n" + "\n".join(section), encoding="utf-8")
 
     def _latest_unprocessed_chunk(self, ready_chunks: list[Path]) -> Path | None:
         for chunk_file in reversed(ready_chunks):
@@ -313,8 +372,10 @@ class MeetingService:
                 continue
 
             prompt = (
-                "Resume esta sesion de reuniones en espanol con estas secciones: "
-                "ideas principales, observaciones, decisiones, compromisos y pendientes. "
+                "Resume esta sesion en espanol usando Markdown simple y exactamente estas secciones: "
+                "## Ideas principales, ## Observaciones, ## Decisiones, ## Compromisos y ## Pendientes. "
+                "En cada seccion usa bullets cortos y concretos. "
+                "No agregues introduccion ni conclusion. "
                 "Texto nuevo de la sesion:\n\n"
                 f"{delta_text}"
             )
@@ -324,7 +385,14 @@ class MeetingService:
                 self._snapshot.summary_error = None
 
             try:
-                insight = self.open_code.run(prompt, system_prompt="Eres un asistente de reuniones que resume de forma concreta.")
+                insight_created_at = datetime.utcnow()
+                insight = self.open_code.run(
+                    prompt,
+                    system_prompt=(
+                        "Eres un asistente de reuniones que resume de forma concreta. "
+                        "Devuelve Markdown limpio, con headings y bullets solamente."
+                    ),
+                )
                 summary_status = "done"
                 summary_error = None
             except Exception as exc:
@@ -332,20 +400,15 @@ class MeetingService:
                 summary_status = "failed"
                 summary_error = str(exc)
 
-            if config.persist_insights and self._summary_file is not None:
-                payload = {
-                    "ts": datetime.utcnow().isoformat(),
-                    "insight": insight,
-                }
-                with self._summary_file.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            if config.persist_insights and self._insights_file is not None:
+                self._append_insight_markdown(self._insights_file, insight, insight_created_at)
 
             with self._lock:
                 self._snapshot.latest_insight = insight
                 self._snapshot.status_message = "summarizing meeting progress"
                 self._snapshot.summary_status = summary_status
                 self._snapshot.summary_error = summary_error
-                self._snapshot.last_summary_at = datetime.utcnow().isoformat(timespec="seconds")
+                self._snapshot.last_summary_at = insight_created_at.isoformat(timespec="seconds")
 
             last_summary_at = time.monotonic()
             last_len = live_len

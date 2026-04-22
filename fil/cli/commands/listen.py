@@ -87,9 +87,10 @@ def register(app: typer.Typer) -> None:
         try:
             from rich.live import Live
             from rich.layout import Layout
+            from rich.markdown import Markdown
             from rich.panel import Panel
 
-            def render_screen(snapshot):
+            def build_layout() -> Layout:
                 layout = Layout()
                 layout.split_column(
                     Layout(name="header", size=12),
@@ -99,7 +100,9 @@ def register(app: typer.Typer) -> None:
                     Layout(name="transcript", ratio=3),
                     Layout(name="insights", ratio=2),
                 )
+                return layout
 
+            def update_screen(layout: Layout, snapshot) -> None:
                 header_lines = [
                     f"Mode: {snapshot.mode}",
                     f"Status: {snapshot.status_message}",
@@ -119,18 +122,24 @@ def register(app: typer.Typer) -> None:
                     header_lines.append(f"Summary error: {snapshot.summary_error}")
 
                 transcript_text = snapshot.live_transcript[-3000:] if snapshot.live_transcript else "waiting for transcript..."
-                insight_text = snapshot.latest_insight[-2000:] if snapshot.latest_insight else "waiting for insights..."
+                insight_renderable = Markdown(snapshot.latest_insight) if snapshot.latest_insight else "waiting for insights..."
 
                 layout["header"].update(Panel("\n".join(header_lines), title=f"FIL Listen Live ({session.id})", border_style="cyan"))
                 layout["transcript"].update(Panel(transcript_text, title="Transcript", border_style="green"))
-                layout["insights"].update(Panel(insight_text, title="Session Insight", border_style="magenta"))
-                return layout
+                layout["insights"].update(Panel(insight_renderable, title="Session Insight", border_style="magenta"))
 
-            with Live(render_screen(service.snapshot()), console=console, refresh_per_second=4) as live:
-                while True:
-                    snapshot = service.snapshot()
-                    live.update(render_screen(snapshot))
-                    time.sleep(0.5)
+            layout = build_layout()
+            update_screen(layout, service.snapshot())
+            console.show_cursor(False)
+            try:
+                with Live(layout, console=console, auto_refresh=False) as live:
+                    while True:
+                        snapshot = service.snapshot()
+                        update_screen(layout, snapshot)
+                        live.refresh()
+                        time.sleep(0.5)
+            finally:
+                console.show_cursor(True)
         except KeyboardInterrupt:
             stopped = service.stop()
             console.print(f"[bold green]Meeting stopped[/bold green] ({stopped.id})")

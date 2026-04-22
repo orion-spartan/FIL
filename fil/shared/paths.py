@@ -26,5 +26,11 @@ def temp_root() -> Path:
     return root
 
 
+def sessions_root() -> Path:
+    root = data_root() / "sessions"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def db_path() -> Path:
     return data_root() / "fil.db"

@@ -14,7 +14,7 @@ from fil.infrastructure.audio.pulse_sources import PulseSourceResolver
 from fil.infrastructure.audio.pw_record import PwRecordRecorder
 from fil.infrastructure.storage.session_store import SessionStore
 from fil.infrastructure.transcription.faster_whisper import FasterWhisperTranscriber
-from fil.shared.paths import audio_root, db_path, temp_root
+from fil.shared.paths import audio_root, db_path, sessions_root, temp_root
 
 
 def session_store() -> SessionStore:
@@ -59,6 +59,7 @@ def meeting_service() -> MeetingService:
             source_resolver=PulseSourceResolver(),
             frame_window_seconds=0.05,
         ),
+        output_root=sessions_root(),
         temp_root=temp_root(),
     )
 

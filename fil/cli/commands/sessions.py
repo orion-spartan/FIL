@@ -45,6 +45,14 @@ def register(app: typer.Typer) -> None:
         ]
         if session.audio_path:
             body.append(f"Audio: {session.audio_path}")
+        if session.transcript_path:
+            body.append(f"Transcript: {session.transcript_path}")
+        output_dir = session.metadata.get("output_dir")
+        if output_dir:
+            body.append(f"Output: {output_dir}")
+        insights_path = session.metadata.get("insights_path")
+        if insights_path:
+            body.append(f"Insights: {insights_path}")
         if session.error_message:
             body.append(f"Error: {session.error_message}")
         console.print(Panel("\n".join(body), title=session.id))
