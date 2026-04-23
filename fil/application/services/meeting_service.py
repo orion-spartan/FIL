@@ -4,6 +4,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,11 +18,19 @@ from fil.infrastructure.transcription.faster_whisper import FasterWhisperTranscr
 from fil.shared.meter import AudioMeterState
 
 
+class SummaryMode(StrEnum):
+    AUTO = "auto"
+    MANUAL = "manual"
+    OFF = "off"
+
+
 @dataclass(slots=True)
 class MeetingConfig:
     input_mode: AudioInputMode = AudioInputMode.MIXED
     transcript_chunk_seconds: float = 30.0
     summary_every_seconds: float = 45.0
+    summary_mode: SummaryMode = SummaryMode.AUTO
+    summary_model: str | None = "openai/gpt-5.4-mini-fast"
     transcription_model: str = "tiny"
     transcription_language: str | None = "es"
     persist_transcript: bool = True
@@ -32,6 +41,7 @@ class MeetingConfig:
 class MeetingSnapshot:
     mode: str = "idle"
     status_message: str = "ready"
+    summary_mode: str = SummaryMode.AUTO.value
     mic_meter: AudioMeterState = field(default_factory=AudioMeterState)
     system_meter: AudioMeterState = field(default_factory=AudioMeterState)
     live_transcript: str = ""
@@ -74,6 +84,8 @@ class MeetingService:
         self._summary_thread: threading.Thread | None = None
         self._transcript_file: Path | None = None
         self._insights_file: Path | None = None
+        self._config: MeetingConfig | None = None
+        self._last_summary_length = 0
         self._transcript_parts: list[str] = []
         self._processed_chunk_names: set[str] = set()
 
@@ -83,6 +95,7 @@ class MeetingService:
             return MeetingSnapshot(
                 mode=self._snapshot.mode,
                 status_message=self._snapshot.status_message,
+                summary_mode=self._snapshot.summary_mode,
                 mic_meter=meter_snapshot.mic,
                 system_meter=meter_snapshot.system,
                 live_transcript=self._snapshot.live_transcript,
@@ -102,7 +115,8 @@ class MeetingService:
             self._snapshot = MeetingSnapshot(
                 mode="running",
                 status_message="starting meeting capture",
-                summary_status="waiting for transcript",
+                summary_mode=config.summary_mode.value,
+                summary_status="disabled" if config.summary_mode == SummaryMode.OFF else "waiting for transcript",
             )
 
         session_id = uuid4().hex[:12]
@@ -134,6 +148,8 @@ class MeetingService:
                 "input_mode": config.input_mode.value,
                 "transcript_chunk_seconds": config.transcript_chunk_seconds,
                 "summary_every_seconds": config.summary_every_seconds,
+                "summary_mode": config.summary_mode.value,
+                "summary_model": config.summary_model,
                 "transcription_model": config.transcription_model,
                 "transcription_language": config.transcription_language,
                 "persist_transcript": config.persist_transcript,
@@ -171,6 +187,8 @@ class MeetingService:
         self._session = session
         self._transcript_file = transcript_file
         self._insights_file = insights_file
+        self._config = config
+        self._last_summary_length = 0
         self._transcript_parts = []
         self._processed_chunk_names = set()
 
@@ -180,20 +198,23 @@ class MeetingService:
             name=f"fil-meeting-transcribe-{session_id}",
             daemon=True,
         )
-        self._summary_thread = threading.Thread(
-            target=self._summary_loop,
-            args=(config,),
-            name=f"fil-meeting-summary-{session_id}",
-            daemon=True,
-        )
         self._transcriber_thread.start()
-        self._summary_thread.start()
+        self._summary_thread = None
+        if config.summary_mode == SummaryMode.AUTO:
+            self._summary_thread = threading.Thread(
+                target=self._summary_loop,
+                args=(config,),
+                name=f"fil-meeting-summary-{session_id}",
+                daemon=True,
+            )
+            self._summary_thread.start()
 
         with self._lock:
             self._snapshot.session_id = session_id
             self._snapshot.status_message = "capturing the first transcript window"
             self._snapshot.next_summary_in = None
-            self._snapshot.summary_status = "waiting for transcript"
+            self._snapshot.summary_mode = config.summary_mode.value
+            self._snapshot.summary_status = "disabled" if config.summary_mode == SummaryMode.OFF else "waiting for transcript"
 
         return session
 
@@ -240,9 +261,34 @@ class MeetingService:
             self._session = None
             self._transcript_file = None
             self._insights_file = None
+            self._config = None
+            self._last_summary_length = 0
             self._snapshot = MeetingSnapshot(mode="stopped", status_message="meeting capture stopped")
 
         return session
+
+    def request_summary(self) -> bool:
+        with self._lock:
+            if self._snapshot.mode != "running" or self._session is None or self._config is None:
+                raise RuntimeError("meeting mode is not currently running")
+            config = self._config
+            if config.summary_mode == SummaryMode.OFF:
+                raise RuntimeError("summary mode is off")
+            if config.summary_mode == SummaryMode.AUTO:
+                raise RuntimeError("summary mode is automatic")
+            if self._summary_thread is not None and self._summary_thread.is_alive():
+                return False
+
+        worker = threading.Thread(
+            target=self._run_manual_summary,
+            args=(config,),
+            name="fil-meeting-summary-manual",
+            daemon=True,
+        )
+        with self._lock:
+            self._summary_thread = worker
+        worker.start()
+        return True
 
     def _transcribe_loop(self, config: MeetingConfig, audio_dir: Path) -> None:
         while not self._stop_event.wait(0.5):
@@ -288,6 +334,7 @@ class MeetingService:
 
         with self._lock:
             self._snapshot.live_transcript = live_transcript
+            self._update_summary_state_locked(live_len=len(live_transcript))
 
     def _write_transcript_markdown(self, session: Session, transcript_file: Path, transcript: str) -> None:
         lines = [
@@ -343,72 +390,104 @@ class MeetingService:
                 return chunk_file
         return None
 
+    def _run_manual_summary(self, config: MeetingConfig) -> None:
+        self._run_summary_once(config)
+
+    def _run_summary_once(self, config: MeetingConfig) -> bool:
+        with self._lock:
+            live_text = self._snapshot.live_transcript
+            live_len = len(live_text)
+            delta_text = live_text[self._last_summary_length :].strip()
+            if live_len == 0 or live_len <= self._last_summary_length or not delta_text:
+                self._update_summary_state_locked(live_len=live_len)
+                return False
+            self._snapshot.summary_status = "running"
+            self._snapshot.summary_error = None
+            self._snapshot.next_summary_in = None
+
+        prompt = (
+            "Resume esta sesion en espanol usando Markdown simple y exactamente estas secciones: "
+            "## Ideas principales, ## Observaciones, ## Decisiones, ## Compromisos y ## Pendientes. "
+            "En cada seccion usa bullets cortos y concretos. "
+            "No agregues introduccion ni conclusion. "
+            "Texto nuevo de la sesion:\n\n"
+            f"{delta_text}"
+        )
+
+        insight_created_at = datetime.utcnow()
+        try:
+            insight = self.open_code.run(
+                prompt,
+                system_prompt=(
+                    "Eres un asistente de reuniones que resume de forma concreta. "
+                    "Devuelve Markdown limpio, con headings y bullets solamente."
+                ),
+                model=config.summary_model,
+            )
+            summary_status = "done"
+            summary_error = None
+        except Exception as exc:
+            insight = f"summary failed: {exc}"
+            summary_status = "failed"
+            summary_error = str(exc)
+
+        if config.persist_insights and self._insights_file is not None:
+            self._append_insight_markdown(self._insights_file, insight, insight_created_at)
+
+        with self._lock:
+            self._snapshot.latest_insight = insight
+            self._snapshot.status_message = "summarizing meeting progress"
+            self._snapshot.summary_status = summary_status
+            self._snapshot.summary_error = summary_error
+            self._snapshot.last_summary_at = insight_created_at.isoformat(timespec="seconds")
+            self._last_summary_length = live_len
+
+        return True
+
+    def _update_summary_state_locked(self, *, live_len: int) -> None:
+        config = self._config
+        if config is None or self._snapshot.summary_status == "running":
+            return
+        self._snapshot.summary_mode = config.summary_mode.value
+        if config.summary_mode == SummaryMode.OFF:
+            self._snapshot.summary_status = "disabled"
+            self._snapshot.next_summary_in = None
+            return
+        if live_len == 0:
+            self._snapshot.summary_status = "waiting for transcript"
+            self._snapshot.next_summary_in = None
+            return
+        if live_len <= self._last_summary_length:
+            self._snapshot.summary_status = "waiting for new transcript"
+            if config.summary_mode != SummaryMode.AUTO:
+                self._snapshot.next_summary_in = None
+            return
+        if config.summary_mode == SummaryMode.MANUAL:
+            self._snapshot.summary_status = "ready (press i)"
+            self._snapshot.next_summary_in = None
+            return
+        self._snapshot.summary_status = "scheduled"
+
     def _summary_loop(self, config: MeetingConfig) -> None:
         last_summary_at = time.monotonic()
-        last_len = 0
         while not self._stop_event.wait(1.0):
-            elapsed = time.monotonic() - last_summary_at
             with self._lock:
-                live_text = self._snapshot.live_transcript
-                live_len = len(live_text)
+                live_len = len(self._snapshot.live_transcript)
+                next_summary_in: float | None
                 if live_len == 0:
                     self._snapshot.next_summary_in = None
+                    next_summary_in = None
                 else:
+                    elapsed = time.monotonic() - last_summary_at
                     self._snapshot.next_summary_in = max(config.summary_every_seconds - elapsed, 0.0)
+                    next_summary_in = self._snapshot.next_summary_in
+                self._update_summary_state_locked(live_len=live_len)
 
-            if elapsed < config.summary_every_seconds or live_len <= last_len:
-                with self._lock:
-                    if live_len == 0:
-                        self._snapshot.summary_status = "waiting for transcript"
-                        self._snapshot.status_message = "waiting for the first transcript window"
-                    elif live_len <= last_len:
-                        self._snapshot.summary_status = "waiting for new transcript"
+            if live_len == 0 or live_len <= self._last_summary_length:
                 continue
 
-            delta_text = live_text[last_len:].strip()
-            if not delta_text:
-                with self._lock:
-                    self._snapshot.summary_status = "waiting for transcript"
+            if next_summary_in is not None and next_summary_in > 0.0:
                 continue
 
-            prompt = (
-                "Resume esta sesion en espanol usando Markdown simple y exactamente estas secciones: "
-                "## Ideas principales, ## Observaciones, ## Decisiones, ## Compromisos y ## Pendientes. "
-                "En cada seccion usa bullets cortos y concretos. "
-                "No agregues introduccion ni conclusion. "
-                "Texto nuevo de la sesion:\n\n"
-                f"{delta_text}"
-            )
-
-            with self._lock:
-                self._snapshot.summary_status = "running"
-                self._snapshot.summary_error = None
-
-            try:
-                insight_created_at = datetime.utcnow()
-                insight = self.open_code.run(
-                    prompt,
-                    system_prompt=(
-                        "Eres un asistente de reuniones que resume de forma concreta. "
-                        "Devuelve Markdown limpio, con headings y bullets solamente."
-                    ),
-                )
-                summary_status = "done"
-                summary_error = None
-            except Exception as exc:
-                insight = f"summary failed: {exc}"
-                summary_status = "failed"
-                summary_error = str(exc)
-
-            if config.persist_insights and self._insights_file is not None:
-                self._append_insight_markdown(self._insights_file, insight, insight_created_at)
-
-            with self._lock:
-                self._snapshot.latest_insight = insight
-                self._snapshot.status_message = "summarizing meeting progress"
-                self._snapshot.summary_status = summary_status
-                self._snapshot.summary_error = summary_error
-                self._snapshot.last_summary_at = insight_created_at.isoformat(timespec="seconds")
-
-            last_summary_at = time.monotonic()
-            last_len = live_len
+            if self._run_summary_once(config):
+                last_summary_at = time.monotonic()

@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime
-import select
-import sys
-import termios
 import threading
-import time
-import tty
 
 import typer
 from rich.console import Group
@@ -18,29 +12,7 @@ from rich.table import Table
 from fil.application.services.runtime import talk_service
 from fil.application.services.talk_service import TalkMode, TalkSnapshot
 from fil.shared.console import console
-
-
-@contextmanager
-def terminal_keys():
-    if not sys.stdin.isatty():
-        raise RuntimeError("talk mode requires an interactive terminal")
-
-    file_descriptor = sys.stdin.fileno()
-    original_settings = termios.tcgetattr(file_descriptor)
-    try:
-        tty.setcbreak(file_descriptor)
-        console.show_cursor(False)
-        yield
-    finally:
-        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
-        console.show_cursor(True)
-
-
-def read_key(timeout: float = 0.1) -> str | None:
-    readable, _writable, _errors = select.select([sys.stdin], [], [], timeout)
-    if not readable:
-        return None
-    return sys.stdin.read(1)
+from fil.shared.terminal import is_quit_key, read_key, terminal_keys
 
 
 def _elapsed(started_at: datetime | None) -> str:
@@ -127,7 +99,7 @@ def run_talk() -> None:
             stop_error = exc
 
     try:
-        with terminal_keys(), Live(render_talk(service.snapshot()), console=console, refresh_per_second=10) as live:
+        with terminal_keys(require_tty=True), Live(render_talk(service.snapshot()), console=console, refresh_per_second=10) as live:
             while True:
                 snapshot = service.snapshot()
                 live.update(render_talk(snapshot, exiting=exit_after_processing))
@@ -152,7 +124,7 @@ def run_talk() -> None:
                         stop_error = None
                         stop_thread = threading.Thread(target=stop_worker, name="fil-talk-stop", daemon=True)
                         stop_thread.start()
-                elif key in {"q", "Q", "\x03"}:
+                elif is_quit_key(key):
                     if snapshot.mode == TalkMode.LISTENING:
                         service.cancel()
                         break

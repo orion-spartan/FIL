@@ -4,12 +4,22 @@ import subprocess
 
 
 class OpenCodeRunner:
-    def run(self, prompt: str, *, system_prompt: str | None = None, timeout: int = 120) -> str:
+    def run(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        timeout: int = 120,
+        model: str | None = None,
+    ) -> str:
         final_prompt = prompt
         if system_prompt:
             final_prompt = f"{system_prompt}\n\n{prompt}"
 
-        command = ["opencode", "run", final_prompt]
+        command = ["opencode", "run"]
+        if model:
+            command.extend(["-m", model])
+        command.append(final_prompt)
 
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
