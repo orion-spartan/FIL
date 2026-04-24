@@ -2,6 +2,10 @@
 
 FIL es un asistente local para Linux orientado a reuniones, dictado y automatización por comandos.
 
+## Quick Start
+
+Para instalarlo y levantarlo rapido en otra PC Linux, revisa [`QUICKSTART.md`](./QUICKSTART.md).
+
 La idea del proyecto es correr como una herramienta liviana, local-first, que pueda escuchar audio del sistema y del micrófono, transcribir en tiempo casi real y despachar acciones a agentes mediante comandos simples.
 
 En el modelo actual, `FIL` es la plataforma que conoce el dominio de reuniones y `OpenCode` es el orquestador que decide cómo usar tools y agentes sobre ese dominio.
